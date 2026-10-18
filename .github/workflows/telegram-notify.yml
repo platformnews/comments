@@ -1,0 +1,78 @@
+# Copy file này vào repo platformnews/comments tại .github/workflows/telegram-notify.yml
+# Gửi tin nhắn Telegram mỗi khi có bình luận / trả lời mới trong GitHub Discussions (Giscus).
+#
+# Cần 2 secret trong repo comments (Settings → Secrets and variables → Actions):
+#   TELEGRAM_BOT_TOKEN  — token từ @BotFather
+#   TELEGRAM_CHAT_ID    — chat id của bạn
+# Tuỳ chọn, 1 variable:
+#   TELEGRAM_IGNORE_USERS — danh sách username GitHub không cần báo, cách nhau bởi dấu phẩy
+
+name: Notify Telegram on new comment
+
+on:
+  discussion_comment:
+    types: [created]
+  workflow_dispatch: # chạy tay để gửi tin nhắn thử
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send Telegram message
+        env:
+          # Dữ liệu đi qua env (không chèn thẳng vào script) để tránh script injection
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          IGNORE: ${{ vars.TELEGRAM_IGNORE_USERS }}
+          EVENT: ${{ github.event_name }}
+          AUTHOR: ${{ github.event.comment.user.login }}
+          BODY: ${{ github.event.comment.body }}
+          URL: ${{ github.event.comment.html_url }}
+          PARENT_ID: ${{ github.event.comment.parent_id }}
+          TITLE: ${{ github.event.discussion.title }}
+          DISCUSSION_BODY: ${{ github.event.discussion.body }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys, urllib.request
+
+          e = os.environ
+          if not e.get("TELEGRAM_BOT_TOKEN") or not e.get("TELEGRAM_CHAT_ID"):
+              sys.exit("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID secret")
+
+          if e["EVENT"] == "workflow_dispatch":
+              text = "✅ Platform News: Telegram notifications are working."
+          else:
+              author = e.get("AUTHOR", "")
+              ignore = {u.strip().lower() for u in e.get("IGNORE", "").split(",") if u.strip()}
+              if author.lower() in ignore:
+                  print(f"Skip comment from {author}")
+                  sys.exit(0)
+
+              body = e.get("BODY", "").strip()
+              if len(body) > 800:
+                  body = body[:800] + "…"
+
+              kind = "↩️ Trả lời mới" if e.get("PARENT_ID") else "💬 Bình luận mới"
+              lines = [f"{kind} · {e.get('TITLE', '')}", f"👤 @{author}", "", body, "", f"🔗 GitHub: {e.get('URL', '')}"]
+
+              # Giscus ghi link bài viết vào nội dung discussion
+              m = re.search(r"https://platformnews\.net/\S+", e.get("DISCUSSION_BODY", ""))
+              if m:
+                  lines.append(f"📄 Bài viết: {m.group(0).rstrip(').,')}")
+              text = "\n".join(lines)
+
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{e['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              data=json.dumps({
+                  "chat_id": e["TELEGRAM_CHAT_ID"],
+                  "text": text[:4000],
+                  "disable_web_page_preview": True,
+              }).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(req, timeout=15) as r:
+              print("Telegram:", r.status)
+          PY
